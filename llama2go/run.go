@@ -1,4 +1,4 @@
-package main
+package llama2go
 
 import (
 	"encoding/binary"
@@ -403,14 +403,24 @@ func decode(t *Tokenizer, prev_token, token int) string {
 	return piece
 }
 
-func safe_printf(piece string) {
+func is_printable(piece string) bool {
+	if piece == "" {
+		return false
+	}
+
 	// piece might be a raw byte token, and we only want to print printable chars or whitespace
 	// because some of the other bytes can be various control codes, backspace, etc.
 	if len(piece) == 1 && !unicode.IsPrint(rune(piece[0])) && !unicode.IsSpace(rune(piece[0])) {
-		return // bad byte, don't print it
+		return false // bad byte, don't print it
 	}
 
-	fmt.Print(piece)
+	return true
+}
+
+func safe_printf(piece string) {
+	if is_printable(piece) {
+		fmt.Print(piece)
+	}
 }
 
 // ----------------------------------------------------------------------------
@@ -554,7 +564,8 @@ func sample(sampler *Sampler, logits []float32) int {
 // ----------------------------------------------------------------------------
 // generation loop
 
-func generate(transformer *Transformer, tokenizer *Tokenizer, sampler *Sampler, steps int) {
+func generate_tokens(transformer *Transformer, tokenizer *Tokenizer, sampler *Sampler, steps int,
+	callback func(string)) {
 	steps = min(steps, int(transformer.config.seq_len))
 
 	//encode(tokenizer, prompt, true, false, prompt_tokens, &num_prompt_tokens)
@@ -564,8 +575,7 @@ func generate(transformer *Transformer, tokenizer *Tokenizer, sampler *Sampler, 
 	start := 0                // used to time our code, only initialized after first iteration
 	next := 0                 // will store the next token in the sequence
 	token := prompt_tokens[0] // kick off with the first token in the prompt
-	pos := 0                  // position in the sequence
-	for pos < steps {
+	for pos := 0; pos < steps; pos++ {
 
 		// forward the transformer to get logits for the next token
 		logits := forward(transformer, token, pos)
@@ -578,7 +588,6 @@ func generate(transformer *Transformer, tokenizer *Tokenizer, sampler *Sampler, 
 			// otherwise sample the next token from the logits
 			next = sample(sampler, logits)
 		}
-		pos++
 
 		// data-dependent terminating condition: the BOS (=1) token delimits sequences
 		if next == 1 {
@@ -587,7 +596,10 @@ func generate(transformer *Transformer, tokenizer *Tokenizer, sampler *Sampler, 
 
 		// print the token as string, decode it with the Tokenizer object
 		piece := decode(tokenizer, token, next)
-		safe_printf(piece) // same as printf("%s", piece), but skips "unsafe" bytes
+
+		if is_printable(piece) {
+			callback(piece)
+		}
 		token = next
 
 		// init the timer here because the first iteration can be slower
@@ -595,41 +607,31 @@ func generate(transformer *Transformer, tokenizer *Tokenizer, sampler *Sampler, 
 			start = int(time.Now().UnixMilli())
 		}
 	}
+}
 
-	fmt.Println()
+func generate_and_print(transformer *Transformer, tokenizer *Tokenizer, sampler *Sampler, steps int) {
+	start := int(time.Now().UnixMilli())
 
-	// report achieved tok/s (pos-1 because the timer starts after first iteration)
-	if pos > 1 {
-		end := int(time.Now().UnixMilli())
-		fmt.Fprintf(os.Stderr, "achieved tok/s: %f\n", float64(pos-1)/(float64)(end-start)*1000)
+	token_count := 0
+	generate_tokens(transformer, tokenizer, sampler, steps, func(piece string) {
+		fmt.Print(piece)
+		token_count++
+	})
+
+	if token_count > 0 {
+		tps := (token_count * 1000 * 1000) / (int(time.Now().UnixMilli()) - start)
+		fmt.Fprintf(os.Stderr, "\n\nachieved tok/s: %v.%03v\n", tps/1000, tps%1000)
 	}
 }
 
-// ----------------------------------------------------------------------------
-// CLI
+func generate_text(transformer *Transformer, tokenizer *Tokenizer, sampler *Sampler, steps int) string {
+	var buf []byte
 
-func main() {
-	checkpoint_path := "stories15M.bin"
-	tokenizer_path := "tokenizer.bin"
-	temperature := float32(0) // 0.0 = greedy deterministic. 1.0 = original. don't set higher
-	//temperature := float32(1) // 0.0 = greedy deterministic. 1.0 = original. don't set higher
-	topp := float32(0.9)  // top-p in nucleus sampling. 1.0 = off. 0.9 works well, but slower
-	steps := 256          // number of steps to run for
-	rng_seed := uint64(0) // seed rng with time by default
+	generate_tokens(transformer, tokenizer, sampler, steps, func(piece string) {
+		buf = append(buf, piece...)
+	})
 
-	// build the Transformer via the model .bin file
-	var transformer Transformer
-	build_transformer(&transformer, checkpoint_path)
-
-	// build the Tokenizer via the tokenizer .bin file
-	var tokenizer Tokenizer
-	build_tokenizer(&tokenizer, tokenizer_path, int(transformer.config.vocab_size))
-
-	// build the Sampler
-	var sampler Sampler
-	build_sampler(&sampler, int(transformer.config.vocab_size), temperature, topp, rng_seed)
-
-	generate(&transformer, &tokenizer, &sampler, steps)
+	return string(buf)
 }
 
 // ----------------------------------------------------------------------------
