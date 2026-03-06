@@ -42,6 +42,27 @@ Timmy lit a match and lit the coal. He watched it burn until it cooled down and 
 		},
 		{
 			temp: 1,
+			seed: 1,
+			topp: 1,
+			want: `
+Once upon a time, there was a little boy named Timmy. Timmy loved to play outside and collect rocks. He had a big collection of shiny rocks that he wouldist with his own luck.
+One day, Timmy's mom asked him what he was doing. Timmy said, "I'm looking at my rocks. I have a useful collection." His mom smiled and asked, "What kind of box you'll look if you straight off?"
+Timmy thought for a moment and said, "I want to look at my pocket where my mom has a coin." Timmy's mom helped him tie his shoe and they went to the store. Timmy found the perfect rock to put in his pocket and Tiny to keep him and his mom's trust.
+			`,
+		},
+		{
+			temp: 1,
+			seed: 1,
+			topp: 0.5,
+			want: `
+Once upon a time, there was a little girl named Lily. She loved to play outside in the sunshine. One day, she saw a big yellow flower in the garden. She wanted to pick it, but it was too high for her to reach.
+Lily asked her mommy for help. "Mommy, can you help me pick the yellow flower?" she said. "Sure, sweetie," her mommy replied. She lifted Lily up so she could pick the flower.
+Lily was so happy to have the yellow flower. She showed it to her mommy and they both smiled. "Look, mommy! I picked the flower all by myself!" Lily said. "That's great, Lily. You did a great job," her mommy said.
+From that day on, Lily loved to pick flowers in the garden. She always asked her mommy to help her pick them. And every time she saw a yellow flower, she smiled and felt happy.
+			`,
+		},
+		{
+			temp: 1,
 			seed: 2,
 			want: `
 Once upon a time, there was a big house with a chimney. A little birdie lived in the chimney. The birdie was very happy and sang songs all day long. One day, a big storm came and the birdie's nest fell down. The birdie was sad and scared.
