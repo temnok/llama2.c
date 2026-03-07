@@ -63,11 +63,11 @@ The birdie was happy and started to sing again. The girl said, "I'm sorry I scar
 		},
 	}
 
-	checkpoint_path := "../stories15M.bin"
-	tokenizer_path := "../tokenizer.bin"
+	checkpointPath := "../stories15M.bin"
+	tokenizerPath := "../tokenizer.bin"
 
-	transformer := NewTransformer(checkpoint_path)
-	tokenizer := NewTokenizer(tokenizer_path, transformer.VocabSize())
+	transformer := NewTransformer(checkpointPath)
+	tokenizer := NewTokenizer(tokenizerPath, transformer.VocabSize())
 
 	for _, test := range tests {
 		topp := float32(0.9)
@@ -85,7 +85,7 @@ The birdie was happy and started to sing again. The girl said, "I'm sorry I scar
 		got := GenerateText(transformer, tokenizer, sampler, steps)
 
 		if want := strings.TrimSpace(test.want); got != want {
-			t.Errorf("generate_text(temp=%v, topp=%v, seed=%v, steps=%v):\nwant\n\n%v\n\ngot\n\n%v\n\n",
+			t.Errorf("GenerateText(temp=%v, topp=%v, seed=%v, steps=%v):\nwant\n\n%v\n\ngot\n\n%v\n\n",
 				test.temp, topp, test.seed, steps, want, got)
 		}
 	}

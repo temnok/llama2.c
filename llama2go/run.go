@@ -16,32 +16,32 @@ import (
 // Transformer model
 
 type config struct {
-	dim        int32 // transformer dimension
-	hidden_dim int32 // for ffn layers
-	n_layers   int32 // number of layers
-	n_heads    int32 // number of query heads
-	n_kv_heads int32 // number of key/value heads (can be < query heads because of multiquery)
-	vocab_size int32 // vocabulary size, usually 256 (byte-level)
-	seq_len    int32 // max sequence length
+	dim       int32 // transformer dimension
+	hiddenDim int32 // for ffn layers
+	nLayers   int32 // number of layers
+	nHeads    int32 // number of query heads
+	nKvHeads  int32 // number of key/value heads (can be < query heads because of multiquery)
+	vocabSize int32 // vocabulary size, usually 256 (byte-level)
+	seqLen    int32 // max sequence length
 }
 
 type transformerWeights struct {
 	// token embedding table
-	token_embedding_table []float32 // (vocab_size, dim)
+	tokenEmbeddingTable []float32 // (vocabSize, dim)
 	// weights for rmsnorms
-	rms_att_weight []float32 // (layer, dim) rmsnorm weights
-	rms_ffn_weight []float32 // (layer, dim)
-	// weights for matmuls. note dim == n_heads * head_size
-	wq []float32 // (layer, dim, n_heads * head_size)
-	wk []float32 // (layer, dim, n_kv_heads * head_size)
-	wv []float32 // (layer, dim, n_kv_heads * head_size)
-	wo []float32 // (layer, n_heads * head_size, dim)
+	rmsAttWeight []float32 // (layer, dim) rmsnorm weights
+	rmsFfnWeight []float32 // (layer, dim)
+	// weights for matmuls. note dim == nHeads * headSize
+	wq []float32 // (layer, dim, nHeads * headSize)
+	wk []float32 // (layer, dim, nKvHeads * headSize)
+	wv []float32 // (layer, dim, nKvHeads * headSize)
+	wo []float32 // (layer, nHeads * headSize, dim)
 	// weights for ffn
-	w1 []float32 // (layer, hidden_dim, dim)
-	w2 []float32 // (layer, dim, hidden_dim)
-	w3 []float32 // (layer, hidden_dim, dim)
+	w1 []float32 // (layer, hiddenDim, dim)
+	w2 []float32 // (layer, dim, hiddenDim)
+	w3 []float32 // (layer, hiddenDim, dim)
 	// final rmsnorm
-	rms_final_weight []float32 // (dim,)
+	rmsFinalWeight []float32 // (dim,)
 	// (optional) classifier weights for the logits, on the last layer
 	wcls []float32
 }
@@ -51,16 +51,16 @@ type runState struct {
 	x      []float32 // activation at current time stamp (dim,)
 	xb     []float32 // same, but inside a residual branch (dim,)
 	xb2    []float32 // an additional buffer just for convenience (dim,)
-	hb     []float32 // buffer for hidden dimension in the ffn (hidden_dim,)
-	hb2    []float32 // buffer for hidden dimension in the ffn (hidden_dim,)
+	hb     []float32 // buffer for hidden dimension in the ffn (hiddenDim,)
+	hb2    []float32 // buffer for hidden dimension in the ffn (hiddenDim,)
 	q      []float32 // query (dim,)
 	k      []float32 // key (dim,)
 	v      []float32 // value (dim,)
-	att    []float32 // buffer for scores/attention values (n_heads, seq_len)
+	att    []float32 // buffer for scores/attention values (nHeads, seqLen)
 	logits []float32 // output logits
 	// kv cache
-	key_cache   []float32 // (layer, seq_len, dim)
-	value_cache []float32 // (layer, seq_len, dim)
+	keyCache   []float32 // (layer, seqLen, dim)
+	valueCache []float32 // (layer, seqLen, dim)
 }
 
 type Transformer struct {
@@ -69,54 +69,54 @@ type Transformer struct {
 	state   runState           // buffers for the "wave" of activations in the forward pass
 }
 
-func malloc_run_state(s *runState, p *config) {
-	kv_dim := (p.dim * p.n_kv_heads) / p.n_heads
+func makeRunState(s *runState, p *config) {
+	kvDim := (p.dim * p.nKvHeads) / p.nHeads
 	s.x = make([]float32, p.dim)
 	s.xb = make([]float32, p.dim)
 	s.xb2 = make([]float32, p.dim)
-	s.hb = make([]float32, p.hidden_dim)
-	s.hb2 = make([]float32, p.hidden_dim)
+	s.hb = make([]float32, p.hiddenDim)
+	s.hb2 = make([]float32, p.hiddenDim)
 	s.q = make([]float32, p.dim)
-	s.key_cache = make([]float32, p.n_layers*p.seq_len*kv_dim)
-	s.value_cache = make([]float32, p.n_layers*p.seq_len*kv_dim)
-	s.att = make([]float32, p.n_heads*p.seq_len)
-	s.logits = make([]float32, p.vocab_size)
+	s.keyCache = make([]float32, p.nLayers*p.seqLen*kvDim)
+	s.valueCache = make([]float32, p.nLayers*p.seqLen*kvDim)
+	s.att = make([]float32, p.nHeads*p.seqLen)
+	s.logits = make([]float32, p.vocabSize)
 }
 
-func memory_map_weights(w *transformerWeights, p *config, ptr []float32, shared_weights bool) {
-	head_size := p.dim / p.n_heads
-	n_layers := p.n_layers
-	w.token_embedding_table = ptr
-	ptr = ptr[p.vocab_size*p.dim:]
-	w.rms_att_weight = ptr
-	ptr = ptr[n_layers*p.dim:]
+func memoryMapWeights(w *transformerWeights, p *config, ptr []float32, sharedWeights bool) {
+	headSize := p.dim / p.nHeads
+	nLayers := p.nLayers
+	w.tokenEmbeddingTable = ptr
+	ptr = ptr[p.vocabSize*p.dim:]
+	w.rmsAttWeight = ptr
+	ptr = ptr[nLayers*p.dim:]
 	w.wq = ptr
-	ptr = ptr[n_layers*p.dim*(p.n_heads*head_size):]
+	ptr = ptr[nLayers*p.dim*(p.nHeads*headSize):]
 	w.wk = ptr
-	ptr = ptr[n_layers*p.dim*(p.n_kv_heads*head_size):]
+	ptr = ptr[nLayers*p.dim*(p.nKvHeads*headSize):]
 	w.wv = ptr
-	ptr = ptr[n_layers*p.dim*(p.n_kv_heads*head_size):]
+	ptr = ptr[nLayers*p.dim*(p.nKvHeads*headSize):]
 	w.wo = ptr
-	ptr = ptr[n_layers*(p.n_heads*head_size)*p.dim:]
-	w.rms_ffn_weight = ptr
-	ptr = ptr[n_layers*p.dim:]
+	ptr = ptr[nLayers*(p.nHeads*headSize)*p.dim:]
+	w.rmsFfnWeight = ptr
+	ptr = ptr[nLayers*p.dim:]
 	w.w1 = ptr
-	ptr = ptr[n_layers*p.dim*p.hidden_dim:]
+	ptr = ptr[nLayers*p.dim*p.hiddenDim:]
 	w.w2 = ptr
-	ptr = ptr[n_layers*p.hidden_dim*p.dim:]
+	ptr = ptr[nLayers*p.hiddenDim*p.dim:]
 	w.w3 = ptr
-	ptr = ptr[n_layers*p.dim*p.hidden_dim:]
-	w.rms_final_weight = ptr
+	ptr = ptr[nLayers*p.dim*p.hiddenDim:]
+	w.rmsFinalWeight = ptr
 	ptr = ptr[p.dim:]
-	ptr = ptr[p.seq_len*head_size/2:] // skip what used to be freq_cis_real (for RoPE)
-	ptr = ptr[p.seq_len*head_size/2:] // skip what used to be freq_cis_imag (for RoPE)
+	ptr = ptr[p.seqLen*headSize/2:] // skip what used to be freqCisReal (for RoPE)
+	ptr = ptr[p.seqLen*headSize/2:] // skip what used to be freqCisImag (for RoPE)
 	w.wcls = ptr
-	if shared_weights {
-		w.wcls = w.token_embedding_table
+	if sharedWeights {
+		w.wcls = w.tokenEmbeddingTable
 	}
 }
 
-func read_checkpoint(checkpoint string, cfg *config, weights *transformerWeights) {
+func readCheckpoint(checkpoint string, cfg *config, weights *transformerWeights) {
 	file := check1(os.Open(checkpoint))
 	defer checkCall(file.Close)
 
@@ -126,17 +126,17 @@ func read_checkpoint(checkpoint string, cfg *config, weights *transformerWeights
 	*cfg = config{cw[0], cw[1], cw[2], cw[3], cw[4], cw[5], cw[6]}
 
 	// negative vocab size is hacky way of signaling unshared weights. bit yikes.
-	shared_weights := cfg.vocab_size > 0
-	if !shared_weights {
-		cfg.vocab_size = -cfg.vocab_size
+	sharedWeights := cfg.vocabSize > 0
+	if !sharedWeights {
+		cfg.vocabSize = -cfg.vocabSize
 	}
 
 	// figure out the file size
 	stat := check1(file.Stat())
-	file_size := stat.Size() // get the file size, in bytes
+	fileSize := stat.Size() // get the file size, in bytes
 
 	// memory map the Transformer weights into the data pointer
-	data := make([]float32, file_size/4-int64(len(cw)))
+	data := make([]float32, fileSize/4-int64(len(cw)))
 	binaryRead(file, data)
 
 	//for i, val := range data {
@@ -144,20 +144,20 @@ func read_checkpoint(checkpoint string, cfg *config, weights *transformerWeights
 	//	data[i] = val
 	//}
 
-	memory_map_weights(weights, cfg, data, shared_weights)
+	memoryMapWeights(weights, cfg, data, sharedWeights)
 }
 
-func NewTransformer(checkpoint_path string) *Transformer {
+func NewTransformer(checkpointPath string) *Transformer {
 	t := &Transformer{}
 	// read in the Config and the Weights from the checkpoint
-	read_checkpoint(checkpoint_path, &t.config, &t.weights)
+	readCheckpoint(checkpointPath, &t.config, &t.weights)
 	// allocate the RunState buffers
-	malloc_run_state(&t.state, &t.config)
+	makeRunState(&t.state, &t.config)
 	return t
 }
 
 func (t *Transformer) VocabSize() int {
-	return int(t.config.vocab_size)
+	return int(t.config.vocabSize)
 }
 
 // ----------------------------------------------------------------------------
@@ -180,16 +180,16 @@ func rmsnorm(o, x, weight []float32, size int) {
 
 func softmax(x []float32, size int) {
 	// find max value (for numerical stability)
-	max_val := x[0]
+	maxVal := x[0]
 	for i := 1; i < size; i++ {
-		if x[i] > max_val {
-			max_val = x[i]
+		if x[i] > maxVal {
+			maxVal = x[i]
 		}
 	}
 	// exp and sum
 	sum := float32(0)
 	for i := 0; i < size; i++ {
-		x[i] = expf(x[i] - max_val)
+		x[i] = expf(x[i] - maxVal)
 		sum += x[i]
 	}
 	// normalize
@@ -218,48 +218,48 @@ func forward(transformer *Transformer, token int, pos int) []float32 {
 	x := s.x
 
 	dim := int(p.dim)
-	hidden_dim := int(p.hidden_dim)
-	n_layers := int(p.n_layers)
-	n_heads := int(p.n_heads)
-	n_kv_heads := int(p.n_kv_heads)
-	vocab_size := int(p.vocab_size)
-	seq_len := int(p.seq_len)
+	hiddenDim := int(p.hiddenDim)
+	nLayers := int(p.nLayers)
+	nHeads := int(p.nHeads)
+	nKvHeads := int(p.nKvHeads)
+	vocabSize := int(p.vocabSize)
+	seqLen := int(p.seqLen)
 
-	kv_dim := (dim * n_kv_heads) / n_heads
-	kv_mul := n_heads / n_kv_heads // integer multiplier of the kv sharing in multiquery
-	head_size := dim / n_heads
+	kvDim := (dim * nKvHeads) / nHeads
+	kvMul := nHeads / nKvHeads // integer multiplier of the kv sharing in multiquery
+	headSize := dim / nHeads
 
 	// copy the token embedding into x
-	content_row := w.token_embedding_table[token*dim:]
-	copy(x, content_row[:dim])
+	contentRow := w.tokenEmbeddingTable[token*dim:]
+	copy(x, contentRow[:dim])
 
 	// forward all the layers
-	for l := 0; l < n_layers; l++ {
+	for l := 0; l < nLayers; l++ {
 
 		// attention rmsnorm
-		rmsnorm(s.xb, x, w.rms_att_weight[l*dim:], dim)
+		rmsnorm(s.xb, x, w.rmsAttWeight[l*dim:], dim)
 
 		// key and value point to the kv cache
-		loff := l * seq_len * kv_dim // kv cache layer offset for convenience
-		s.k = s.key_cache[loff+pos*kv_dim:]
-		s.v = s.value_cache[loff+pos*kv_dim:]
+		loff := l * seqLen * kvDim // kv cache layer offset for convenience
+		s.k = s.keyCache[loff+pos*kvDim:]
+		s.v = s.valueCache[loff+pos*kvDim:]
 
 		// qkv matmuls for this position
 		matmul(s.q, s.xb, w.wq[l*dim*dim:], dim, dim)
-		matmul(s.k, s.xb, w.wk[l*dim*kv_dim:], dim, kv_dim)
-		matmul(s.v, s.xb, w.wv[l*dim*kv_dim:], dim, kv_dim)
+		matmul(s.k, s.xb, w.wk[l*dim*kvDim:], dim, kvDim)
+		matmul(s.v, s.xb, w.wv[l*dim*kvDim:], dim, kvDim)
 
 		// RoPE relative positional encoding: complex-valued rotate q and k in each head
 		for i := 0; i < dim; i += 2 {
-			head_dim := i % head_size
-			freq := 1.0 / powf(10000, float32(head_dim)/float32(head_size))
+			headDim := i % headSize
+			freq := 1.0 / powf(10000, float32(headDim)/float32(headSize))
 			val := float32(pos) * freq
 			fcr := cosf(val)
 			fci := sinf(val)
 
 			// how many vectors? 2 = q & k, 1 = q only
 			rotn := 1
-			if i < kv_dim {
+			if i < kvDim {
 				rotn = 2
 			}
 
@@ -277,21 +277,21 @@ func forward(transformer *Transformer, token int, pos int) []float32 {
 			}
 		}
 
-		for h := 0; h < n_heads; h++ {
+		for h := 0; h < nHeads; h++ {
 			// get the query vector for this head
-			q := s.q[h*head_size:]
+			q := s.q[h*headSize:]
 			// attention scores for this head
-			att := s.att[h*seq_len:]
+			att := s.att[h*seqLen:]
 			// iterate over all timesteps, including the current one
 			for t := 0; t <= pos; t++ {
 				// get the key vector for this head and at this timestep
-				k := s.key_cache[loff+t*kv_dim+(h/kv_mul)*head_size:]
+				k := s.keyCache[loff+t*kvDim+(h/kvMul)*headSize:]
 				// calculate the attention score as the dot product of q and k
 				score := float32(0)
-				for i := 0; i < head_size; i++ {
+				for i := 0; i < headSize; i++ {
 					score += q[i] * k[i]
 				}
-				score /= sqrtf(float32(head_size))
+				score /= sqrtf(float32(headSize))
 				// save the score to the attention buffer
 				att[t] = score
 			}
@@ -300,15 +300,15 @@ func forward(transformer *Transformer, token int, pos int) []float32 {
 			softmax(att, pos+1)
 
 			// weighted sum of the values, store back into xb
-			xb := s.xb[h*head_size:]
-			clear(xb[:head_size])
+			xb := s.xb[h*headSize:]
+			clear(xb[:headSize])
 			for t := 0; t <= pos; t++ {
 				// get the value vector for this head and at this timestep
-				v := s.value_cache[loff+t*kv_dim+(h/kv_mul)*head_size:]
+				v := s.valueCache[loff+t*kvDim+(h/kvMul)*headSize:]
 				// get the attention weight for this timestep
 				a := att[t]
 				// accumulate the weighted value into xb
-				for i := 0; i < head_size; i++ {
+				for i := 0; i < headSize; i++ {
 					xb[i] += a * v[i]
 				}
 			}
@@ -324,15 +324,15 @@ func forward(transformer *Transformer, token int, pos int) []float32 {
 		}
 
 		// ffn rmsnorm
-		rmsnorm(s.xb, x, w.rms_ffn_weight[l*dim:], dim)
+		rmsnorm(s.xb, x, w.rmsFfnWeight[l*dim:], dim)
 
 		// Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
 		// first calculate self.w1(x) and self.w3(x)
-		matmul(s.hb, s.xb, w.w1[l*dim*hidden_dim:], dim, hidden_dim)
-		matmul(s.hb2, s.xb, w.w3[l*dim*hidden_dim:], dim, hidden_dim)
+		matmul(s.hb, s.xb, w.w1[l*dim*hiddenDim:], dim, hiddenDim)
+		matmul(s.hb2, s.xb, w.w3[l*dim*hiddenDim:], dim, hiddenDim)
 
 		// SwiGLU non-linearity
-		for i := 0; i < hidden_dim; i++ {
+		for i := 0; i < hiddenDim; i++ {
 			val := s.hb[i]
 			// silu(x)=x*σ(x), where σ(x) is the logistic sigmoid
 			val *= 1.0 / (1.0 + expf(-val))
@@ -342,7 +342,7 @@ func forward(transformer *Transformer, token int, pos int) []float32 {
 		}
 
 		// final matmul to get the output of the ffn
-		matmul(s.xb, s.hb, w.w2[l*dim*hidden_dim:], hidden_dim, dim)
+		matmul(s.xb, s.hb, w.w2[l*dim*hiddenDim:], hiddenDim, dim)
 
 		// residual connection
 		for i := 0; i < dim; i++ {
@@ -351,10 +351,10 @@ func forward(transformer *Transformer, token int, pos int) []float32 {
 	}
 
 	// final rmsnorm
-	rmsnorm(x, x, w.rms_final_weight, dim)
+	rmsnorm(x, x, w.rmsFinalWeight, dim)
 
 	// classifier into logits
-	matmul(s.logits, x, w.wcls, dim, vocab_size)
+	matmul(s.logits, x, w.wcls, dim, vocabSize)
 	return s.logits
 }
 
@@ -367,29 +367,29 @@ type TokenIndex struct {
 }
 
 type Tokenizer struct {
-	vocab        []string
-	vocab_scores []float32
-	sorted_vocab []TokenIndex
-	vocab_size   int
+	vocab       []string
+	vocabScores []float32
+	sortedVocab []TokenIndex
+	vocabSize   int
 }
 
-func NewTokenizer(tokenizer_path string, vocab_size int) *Tokenizer {
+func NewTokenizer(tokenizerPath string, vocabSize int) *Tokenizer {
 	t := &Tokenizer{
-		// i should have written the vocab_size into the tokenizer file... sigh
-		vocab_size:   vocab_size,
-		vocab:        make([]string, vocab_size),
-		vocab_scores: make([]float32, vocab_size),
+		// i should have written the vocabSize into the tokenizer file... sigh
+		vocabSize:   vocabSize,
+		vocab:       make([]string, vocabSize),
+		vocabScores: make([]float32, vocabSize),
 	}
 
 	// read in the file
-	file := check1(os.Open(tokenizer_path))
+	file := check1(os.Open(tokenizerPath))
 	defer checkCall(file.Close)
 
-	var max_token_length int32
-	binaryRead(file, &max_token_length)
+	var maxTokenLength int32
+	binaryRead(file, &maxTokenLength)
 
-	for i := 0; i < vocab_size; i++ {
-		binaryRead(file, &t.vocab_scores[i])
+	for i := 0; i < vocabSize; i++ {
+		binaryRead(file, &t.vocabScores[i])
 
 		var strlen int32
 		binaryRead(file, &strlen)
@@ -402,10 +402,10 @@ func NewTokenizer(tokenizer_path string, vocab_size int) *Tokenizer {
 	return t
 }
 
-func decode(t *Tokenizer, prev_token, token int) string {
+func decode(t *Tokenizer, prevToken, token int) string {
 	piece := t.vocab[token]
 	// following BOS (1) token, sentencepiece decoder strips any leading whitespace (see PR #89)
-	if prev_token == 1 && piece[0] == ' ' {
+	if prevToken == 1 && piece[0] == ' ' {
 		piece = piece[1:]
 	}
 	// careful, some tokens designate raw bytes, and look like e.g. '<0x01>'
@@ -417,7 +417,7 @@ func decode(t *Tokenizer, prev_token, token int) string {
 	return piece
 }
 
-func is_printable(piece string) bool {
+func isPrintable(piece string) bool {
 	if piece == "" {
 		return false
 	}
@@ -436,35 +436,35 @@ func is_printable(piece string) bool {
 // sampling can be done in a few ways: greedy argmax, sampling, top-p sampling
 
 // struct used when sorting probabilities during top-p sampling
-type ProbIndex struct {
+type probIndex struct {
 	prob  float32
 	index int
 }
 
 type Sampler struct {
-	vocab_size  int
-	probindex   []ProbIndex // buffer used in top-p sampling
+	vocabSize   int
+	probIndex   []probIndex // buffer used in top-p sampling
 	temperature float32
 	topp        float32
-	rng_state   uint64
+	rngState    uint64
 }
 
-func sample_argmax(probabilities []float32, n int) int {
+func sampleArgmax(probabilities []float32, n int) int {
 	// return the index that has the highest probability
-	max_i := 0
-	max_p := probabilities[0]
+	maxI := 0
+	maxP := probabilities[0]
 	for i := 1; i < n; i++ {
-		if probabilities[i] > max_p {
-			max_i = i
-			max_p = probabilities[i]
+		if probabilities[i] > maxP {
+			maxI = i
+			maxP = probabilities[i]
 		}
 	}
-	return max_i
+	return maxI
 }
 
-func sample_mult(probabilities []float32, n int, coin float32) int {
+func sampleMult(probabilities []float32, n int, coin float32) int {
 	// sample index from probabilities (they must sum to 1!)
-	// coin is a random number in [0, 1), usually from random_f32()
+	// coin is a random number in [0, 1), usually from randomF32()
 	cdf := float32(0)
 	for i := 0; i < n; i++ {
 		cdf += probabilities[i]
@@ -475,11 +475,11 @@ func sample_mult(probabilities []float32, n int, coin float32) int {
 	return n - 1 // in case of rounding errors
 }
 
-func sample_topp(probabilities []float32, n int, topp float32, probindex []ProbIndex, coin float32) int {
+func sampleTopP(probabilities []float32, n int, topp float32, probindex []probIndex, coin float32) int {
 	// top-p sampling (or "nucleus sampling") samples from the smallest set of
 	// tokens that exceed probability topp. This way we never sample tokens that
 	// have very low probabilities and are less likely to go "off the rails".
-	// coin is a random number in [0, 1), usually from random_f32()
+	// coin is a random number in [0, 1), usually from randomF32()
 
 	n0 := 0
 	// quicksort indices in descending order of probabilities
@@ -499,40 +499,40 @@ func sample_topp(probabilities []float32, n int, topp float32, probindex []ProbI
 	})
 
 	// truncate the list where cumulative probability exceeds topp
-	cumulative_prob := float32(0)
-	last_idx := n0 - 1 // in case of rounding errors consider all elements
+	cumulativeProb := float32(0)
+	lastIdx := n0 - 1 // in case of rounding errors consider all elements
 	for i := 0; i < n0; i++ {
-		cumulative_prob += probindex[i].prob
-		if cumulative_prob > topp {
-			last_idx = i
-			break // we've exceeded topp by including last_idx
+		cumulativeProb += probindex[i].prob
+		if cumulativeProb > topp {
+			lastIdx = i
+			break // we've exceeded topp by including lastIdx
 		}
 	}
 
 	// sample from the truncated list
-	r := coin * cumulative_prob
+	r := coin * cumulativeProb
 	cdf := float32(0)
-	for i := 0; i <= last_idx; i++ {
+	for i := 0; i <= lastIdx; i++ {
 		cdf += probindex[i].prob
 		if r < cdf {
 			return probindex[i].index
 		}
 	}
-	return probindex[last_idx].index // in case of rounding errors
+	return probindex[lastIdx].index // in case of rounding errors
 }
 
-func NewSampler(vocab_size int, temperature, topp float32, rng_seed uint64) *Sampler {
+func NewSampler(vocabSize int, temperature, topp float32, rngSeed uint64) *Sampler {
 	return &Sampler{
-		vocab_size:  vocab_size,
+		vocabSize:   vocabSize,
 		temperature: temperature,
 		topp:        topp,
-		rng_state:   rng_seed,
+		rngState:    rngSeed,
 		// buffer only used with nucleus sampling; may not need but it's ~small
-		probindex: make([]ProbIndex, vocab_size),
+		probIndex: make([]probIndex, vocabSize),
 	}
 }
 
-func random_u32(state *uint64) int {
+func randomU32(state *uint64) int {
 	// xorshift rng: https://en.wikipedia.org/wiki/Xorshift#xorshift.2A
 	*state ^= *state >> 12
 	*state ^= *state << 25
@@ -540,8 +540,8 @@ func random_u32(state *uint64) int {
 	return int((*state * 0x2545F4914F6CDD1D) >> 32)
 }
 
-func random_f32(state *uint64) float32 { // random float32 in [0,1)
-	return float32(random_u32(state)>>8) / 16777216.0
+func randomF32(state *uint64) float32 { // random float32 in [0,1)
+	return float32(randomU32(state)>>8) / 16777216.0
 }
 
 func sample(sampler *Sampler, logits []float32) int {
@@ -549,23 +549,23 @@ func sample(sampler *Sampler, logits []float32) int {
 	var next int
 	if sampler.temperature == 0 {
 		// greedy argmax sampling: take the token with the highest probability
-		next = sample_argmax(logits, sampler.vocab_size)
+		next = sampleArgmax(logits, sampler.vocabSize)
 	} else {
 		// apply the temperature to the logits
-		for q := 0; q < sampler.vocab_size; q++ {
+		for q := 0; q < sampler.vocabSize; q++ {
 			logits[q] /= sampler.temperature
 		}
 		// apply softmax to the logits to get the probabilities for next token
-		softmax(logits, sampler.vocab_size)
+		softmax(logits, sampler.vocabSize)
 		// flip a (float) coin (this is our source of entropy for sampling)
-		coin := random_f32(&sampler.rng_state)
+		coin := randomF32(&sampler.rngState)
 		// we sample from this distribution to get the next token
 		if sampler.topp <= 0 || sampler.topp >= 1 {
 			// simply sample from the predicted probability distribution
-			next = sample_mult(logits, sampler.vocab_size, coin)
+			next = sampleMult(logits, sampler.vocabSize, coin)
 		} else {
 			// top-p (nucleus) sampling, clamping the least likely tokens to zero
-			next = sample_topp(logits, sampler.vocab_size, sampler.topp, sampler.probindex, coin)
+			next = sampleTopP(logits, sampler.vocabSize, sampler.topp, sampler.probIndex, coin)
 		}
 	}
 	return next
@@ -576,24 +576,24 @@ func sample(sampler *Sampler, logits []float32) int {
 
 func Generate(transformer *Transformer, tokenizer *Tokenizer, sampler *Sampler, steps int,
 	callback func(string)) {
-	steps = min(steps, int(transformer.config.seq_len))
+	steps = min(steps, int(transformer.config.seqLen))
 
-	//encode(tokenizer, prompt, true, false, prompt_tokens, &num_prompt_tokens)
-	prompt_tokens := []int{1}
-	num_prompt_tokens := 1
+	//encode(tokenizer, prompt, true, false, promptTokens, &numPromptTokens)
+	promptTokens := []int{1}
+	numPromptTokens := 1
 
-	start := 0                // used to time our code, only initialized after first iteration
-	next := 0                 // will store the next token in the sequence
-	token := prompt_tokens[0] // kick off with the first token in the prompt
+	start := 0               // used to time our code, only initialized after first iteration
+	next := 0                // will store the next token in the sequence
+	token := promptTokens[0] // kick off with the first token in the prompt
 	for pos := 0; pos < steps; pos++ {
 
 		// forward the transformer to get logits for the next token
 		logits := forward(transformer, token, pos)
 
 		// advance the state machine
-		if pos < num_prompt_tokens-1 {
+		if pos < numPromptTokens-1 {
 			// if we are still processing the input prompt, force the next prompt token
-			next = prompt_tokens[pos+1]
+			next = promptTokens[pos+1]
 		} else {
 			// otherwise sample the next token from the logits
 			next = sample(sampler, logits)
@@ -607,7 +607,7 @@ func Generate(transformer *Transformer, tokenizer *Tokenizer, sampler *Sampler, 
 		// print the token as string, decode it with the Tokenizer object
 		piece := decode(tokenizer, token, next)
 
-		if is_printable(piece) {
+		if isPrintable(piece) {
 			callback(piece)
 		}
 		token = next
