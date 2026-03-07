@@ -6,15 +6,6 @@ import (
 )
 
 func TestGeneration(t *testing.T) {
-	checkpoint_path := "../stories15M.bin"
-	tokenizer_path := "../tokenizer.bin"
-
-	var transformer Transformer
-	build_transformer(&transformer, checkpoint_path)
-
-	var tokenizer Tokenizer
-	build_tokenizer(&tokenizer, tokenizer_path, int(transformer.config.vocab_size))
-
 	tests := []struct {
 		temp, topp float32
 		steps      int
@@ -72,6 +63,12 @@ The birdie was happy and started to sing again. The girl said, "I'm sorry I scar
 		},
 	}
 
+	checkpoint_path := "../stories15M.bin"
+	tokenizer_path := "../tokenizer.bin"
+
+	transformer := NewTransformer(checkpoint_path)
+	tokenizer := NewTokenizer(tokenizer_path, transformer.VocabSize())
+
 	for _, test := range tests {
 		topp := float32(0.9)
 		if test.topp != 0 {
@@ -83,37 +80,13 @@ The birdie was happy and started to sing again. The girl said, "I'm sorry I scar
 			steps = test.steps
 		}
 
-		var sampler Sampler
-		build_sampler(&sampler, int(transformer.config.vocab_size), test.temp, topp, test.seed)
-		got := generate_text(&transformer, &tokenizer, &sampler, steps)
+		sampler := NewSampler(transformer.VocabSize(), test.temp, topp, test.seed)
+
+		got := GenerateText(transformer, tokenizer, sampler, steps)
 
 		if want := strings.TrimSpace(test.want); got != want {
-			t.Fatalf("generate_text(temp=%v, topp=%v, seed=%v, steps=%v):\nwant\n\n%v\n\ngot\n\n%v\n\n",
+			t.Errorf("generate_text(temp=%v, topp=%v, seed=%v, steps=%v):\nwant\n\n%v\n\ngot\n\n%v\n\n",
 				test.temp, topp, test.seed, steps, want, got)
 		}
 	}
-}
-
-func xTestPrint(t *testing.T) {
-	checkpoint_path := "../stories15M.bin"
-	tokenizer_path := "../tokenizer.bin"
-	temperature := float32(0) // 0.0 = greedy deterministic. 1.0 = original. don't set higher
-	//temperature := float32(1) // 0.0 = greedy deterministic. 1.0 = original. don't set higher
-	topp := float32(0.9)  // top-p in nucleus sampling. 1.0 = off. 0.9 works well, but slower
-	steps := 256          // number of steps to run for
-	rng_seed := uint64(0) // seed rng with time by default
-
-	// build the Transformer via the model .bin file
-	var transformer Transformer
-	build_transformer(&transformer, checkpoint_path)
-
-	// build the Tokenizer via the tokenizer .bin file
-	var tokenizer Tokenizer
-	build_tokenizer(&tokenizer, tokenizer_path, int(transformer.config.vocab_size))
-
-	// build the Sampler
-	var sampler Sampler
-	build_sampler(&sampler, int(transformer.config.vocab_size), temperature, topp, rng_seed)
-
-	generate_and_print(&transformer, &tokenizer, &sampler, steps)
 }

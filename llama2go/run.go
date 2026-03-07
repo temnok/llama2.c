@@ -2,7 +2,6 @@ package llama2go
 
 import (
 	"encoding/binary"
-	"fmt"
 	"io"
 	"math"
 	"os"
@@ -16,7 +15,7 @@ import (
 // ----------------------------------------------------------------------------
 // Transformer model
 
-type Config struct {
+type config struct {
 	dim        int32 // transformer dimension
 	hidden_dim int32 // for ffn layers
 	n_layers   int32 // number of layers
@@ -26,7 +25,7 @@ type Config struct {
 	seq_len    int32 // max sequence length
 }
 
-type TransformerWeights struct {
+type transformerWeights struct {
 	// token embedding table
 	token_embedding_table []float32 // (vocab_size, dim)
 	// weights for rmsnorms
@@ -47,7 +46,7 @@ type TransformerWeights struct {
 	wcls []float32
 }
 
-type RunState struct {
+type runState struct {
 	// current wave of activations
 	x      []float32 // activation at current time stamp (dim,)
 	xb     []float32 // same, but inside a residual branch (dim,)
@@ -65,12 +64,12 @@ type RunState struct {
 }
 
 type Transformer struct {
-	config  Config             // the hyperparameters of the architecture (the blueprint)
-	weights TransformerWeights // the weights of the model
-	state   RunState           // buffers for the "wave" of activations in the forward pass
+	config  config             // the hyperparameters of the architecture (the blueprint)
+	weights transformerWeights // the weights of the model
+	state   runState           // buffers for the "wave" of activations in the forward pass
 }
 
-func malloc_run_state(s *RunState, p *Config) {
+func malloc_run_state(s *runState, p *config) {
 	kv_dim := (p.dim * p.n_kv_heads) / p.n_heads
 	s.x = make([]float32, p.dim)
 	s.xb = make([]float32, p.dim)
@@ -84,7 +83,7 @@ func malloc_run_state(s *RunState, p *Config) {
 	s.logits = make([]float32, p.vocab_size)
 }
 
-func memory_map_weights(w *TransformerWeights, p *Config, ptr []float32, shared_weights bool) {
+func memory_map_weights(w *transformerWeights, p *config, ptr []float32, shared_weights bool) {
 	head_size := p.dim / p.n_heads
 	n_layers := p.n_layers
 	w.token_embedding_table = ptr
@@ -117,19 +116,19 @@ func memory_map_weights(w *TransformerWeights, p *Config, ptr []float32, shared_
 	}
 }
 
-func read_checkpoint(checkpoint string, config *Config, weights *TransformerWeights) {
+func read_checkpoint(checkpoint string, cfg *config, weights *transformerWeights) {
 	file := check1(os.Open(checkpoint))
 	defer checkCall(file.Close)
 
 	// read in the config header
 	cw := make([]int32, 7)
 	binaryRead(file, cw)
-	*config = Config{cw[0], cw[1], cw[2], cw[3], cw[4], cw[5], cw[6]}
+	*cfg = config{cw[0], cw[1], cw[2], cw[3], cw[4], cw[5], cw[6]}
 
 	// negative vocab size is hacky way of signaling unshared weights. bit yikes.
-	shared_weights := config.vocab_size > 0
+	shared_weights := cfg.vocab_size > 0
 	if !shared_weights {
-		config.vocab_size = -config.vocab_size
+		cfg.vocab_size = -cfg.vocab_size
 	}
 
 	// figure out the file size
@@ -140,14 +139,25 @@ func read_checkpoint(checkpoint string, config *Config, weights *TransformerWeig
 	data := make([]float32, file_size/4-int64(len(cw)))
 	binaryRead(file, data)
 
-	memory_map_weights(weights, config, data, shared_weights)
+	//for i, val := range data {
+	//	val = math.Float32frombits(math.Float32bits(val) &^ 0xFFFFF)
+	//	data[i] = val
+	//}
+
+	memory_map_weights(weights, cfg, data, shared_weights)
 }
 
-func build_transformer(t *Transformer, checkpoint_path string) {
+func NewTransformer(checkpoint_path string) *Transformer {
+	t := &Transformer{}
 	// read in the Config and the Weights from the checkpoint
 	read_checkpoint(checkpoint_path, &t.config, &t.weights)
 	// allocate the RunState buffers
 	malloc_run_state(&t.state, &t.config)
+	return t
+}
+
+func (t *Transformer) VocabSize() int {
+	return int(t.config.vocab_size)
 }
 
 // ----------------------------------------------------------------------------
@@ -363,11 +373,13 @@ type Tokenizer struct {
 	vocab_size   int
 }
 
-func build_tokenizer(t *Tokenizer, tokenizer_path string, vocab_size int) {
-	// i should have written the vocab_size into the tokenizer file... sigh
-	t.vocab_size = vocab_size
-	t.vocab = make([]string, vocab_size)
-	t.vocab_scores = make([]float32, vocab_size)
+func NewTokenizer(tokenizer_path string, vocab_size int) *Tokenizer {
+	t := &Tokenizer{
+		// i should have written the vocab_size into the tokenizer file... sigh
+		vocab_size:   vocab_size,
+		vocab:        make([]string, vocab_size),
+		vocab_scores: make([]float32, vocab_size),
+	}
 
 	// read in the file
 	file := check1(os.Open(tokenizer_path))
@@ -386,6 +398,8 @@ func build_tokenizer(t *Tokenizer, tokenizer_path string, vocab_size int) {
 		binaryRead(file, buf)
 		t.vocab[i] = string(buf)
 	}
+
+	return t
 }
 
 func decode(t *Tokenizer, prev_token, token int) string {
@@ -415,12 +429,6 @@ func is_printable(piece string) bool {
 	}
 
 	return true
-}
-
-func safe_printf(piece string) {
-	if is_printable(piece) {
-		fmt.Print(piece)
-	}
 }
 
 // ----------------------------------------------------------------------------
@@ -513,13 +521,15 @@ func sample_topp(probabilities []float32, n int, topp float32, probindex []ProbI
 	return probindex[last_idx].index // in case of rounding errors
 }
 
-func build_sampler(sampler *Sampler, vocab_size int, temperature, topp float32, rng_seed uint64) {
-	sampler.vocab_size = vocab_size
-	sampler.temperature = temperature
-	sampler.topp = topp
-	sampler.rng_state = rng_seed
-	// buffer only used with nucleus sampling; may not need but it's ~small
-	sampler.probindex = make([]ProbIndex, sampler.vocab_size)
+func NewSampler(vocab_size int, temperature, topp float32, rng_seed uint64) *Sampler {
+	return &Sampler{
+		vocab_size:  vocab_size,
+		temperature: temperature,
+		topp:        topp,
+		rng_state:   rng_seed,
+		// buffer only used with nucleus sampling; may not need but it's ~small
+		probindex: make([]ProbIndex, vocab_size),
+	}
 }
 
 func random_u32(state *uint64) int {
@@ -564,7 +574,7 @@ func sample(sampler *Sampler, logits []float32) int {
 // ----------------------------------------------------------------------------
 // generation loop
 
-func generate_tokens(transformer *Transformer, tokenizer *Tokenizer, sampler *Sampler, steps int,
+func Generate(transformer *Transformer, tokenizer *Tokenizer, sampler *Sampler, steps int,
 	callback func(string)) {
 	steps = min(steps, int(transformer.config.seq_len))
 
@@ -609,25 +619,10 @@ func generate_tokens(transformer *Transformer, tokenizer *Tokenizer, sampler *Sa
 	}
 }
 
-func generate_and_print(transformer *Transformer, tokenizer *Tokenizer, sampler *Sampler, steps int) {
-	start := int(time.Now().UnixMilli())
-
-	token_count := 0
-	generate_tokens(transformer, tokenizer, sampler, steps, func(piece string) {
-		fmt.Print(piece)
-		token_count++
-	})
-
-	if token_count > 0 {
-		tps := (token_count * 1000 * 1000) / (int(time.Now().UnixMilli()) - start)
-		fmt.Fprintf(os.Stderr, "\n\nachieved tok/s: %v.%03v\n", tps/1000, tps%1000)
-	}
-}
-
-func generate_text(transformer *Transformer, tokenizer *Tokenizer, sampler *Sampler, steps int) string {
+func GenerateText(transformer *Transformer, tokenizer *Tokenizer, sampler *Sampler, steps int) string {
 	var buf []byte
 
-	generate_tokens(transformer, tokenizer, sampler, steps, func(piece string) {
+	Generate(transformer, tokenizer, sampler, steps, func(piece string) {
 		buf = append(buf, piece...)
 	})
 
