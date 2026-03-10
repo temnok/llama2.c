@@ -7,7 +7,9 @@ import (
 )
 
 func main() {
+	// {dim:288 hiddenDim:768 nLayers:6 nHeads:6 nKvHeads:6 vocabSize:32000 seqLen:256}
 	checkpointPath := "../stories15M.bin"
+
 	tokenizerPath := "../tokenizer.bin"
 	temperature := float32(0) // 0.0 = greedy deterministic. 1.0 = original. don't set higher
 	//temperature := float32(1) // 0.0 = greedy deterministic. 1.0 = original. don't set higher

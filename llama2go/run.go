@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 	"unicode"
 )
 
@@ -164,6 +163,8 @@ func (t *Transformer) VocabSize() int {
 // neural net blocks; the dynamics of the Transformer
 
 func rmsnorm(o, x, weight []float32, size int) {
+	rmsnormStats[size]++
+
 	// calculate sum of squares
 	ss := float32(0)
 	for j := 0; j < size; j++ {
@@ -179,6 +180,8 @@ func rmsnorm(o, x, weight []float32, size int) {
 }
 
 func softmax(x []float32, size int) {
+	softmaxStats[size]++
+
 	// find max value (for numerical stability)
 	maxVal := x[0]
 	for i := 1; i < size; i++ {
@@ -199,6 +202,8 @@ func softmax(x []float32, size int) {
 }
 
 func matmul(xout, x, w []float32, n, d int) {
+	matmulStats[[2]int{d, n}]++
+
 	// W (d,n) @ x (n,) -> xout (d,)
 	// by far the most amount of time is spent inside this little function
 	for i := 0; i < d; i++ {
@@ -228,6 +233,7 @@ func forward(transformer *Transformer, token int, pos int) []float32 {
 	kvDim := (dim * nKvHeads) / nHeads
 	kvMul := nHeads / nKvHeads // integer multiplier of the kv sharing in multiquery
 	headSize := dim / nHeads
+	scoreK := 1 / sqrtf(float32(headSize))
 
 	// copy the token embedding into x
 	contentRow := w.tokenEmbeddingTable[token*dim:]
@@ -291,7 +297,7 @@ func forward(transformer *Transformer, token int, pos int) []float32 {
 				for i := 0; i < headSize; i++ {
 					score += q[i] * k[i]
 				}
-				score /= sqrtf(float32(headSize))
+				score *= scoreK
 				// save the score to the attention buffer
 				att[t] = score
 			}
@@ -574,24 +580,24 @@ func sample(sampler *Sampler, logits []float32) int {
 // ----------------------------------------------------------------------------
 // generation loop
 
-func Generate(transformer *Transformer, tokenizer *Tokenizer, sampler *Sampler, steps int,
-	callback func(string)) {
+func Generate(transformer *Transformer, tokenizer *Tokenizer, sampler *Sampler, steps int, callback func(string)) {
 	steps = min(steps, int(transformer.config.seqLen))
 
 	//encode(tokenizer, prompt, true, false, promptTokens, &numPromptTokens)
 	promptTokens := []int{1}
 	numPromptTokens := 1
 
-	start := 0               // used to time our code, only initialized after first iteration
 	next := 0                // will store the next token in the sequence
 	token := promptTokens[0] // kick off with the first token in the prompt
+
 	for pos := 0; pos < steps; pos++ {
 
 		// forward the transformer to get logits for the next token
 		logits := forward(transformer, token, pos)
+		logitsStats[len(logits)]++
 
 		// advance the state machine
-		if pos < numPromptTokens-1 {
+		if pos+1 < numPromptTokens {
 			// if we are still processing the input prompt, force the next prompt token
 			next = promptTokens[pos+1]
 		} else {
@@ -611,12 +617,9 @@ func Generate(transformer *Transformer, tokenizer *Tokenizer, sampler *Sampler, 
 			callback(piece)
 		}
 		token = next
-
-		// init the timer here because the first iteration can be slower
-		if start == 0 {
-			start = int(time.Now().UnixMilli())
-		}
 	}
+
+	printStats()
 }
 
 func GenerateText(transformer *Transformer, tokenizer *Tokenizer, sampler *Sampler, steps int) string {
@@ -648,3 +651,17 @@ func check(err error) {
 
 func check1[A any](a A, err error) A { check(err); return a }
 func checkCall(f func() error)       { check(f()) }
+
+// ----------------------------------------------------------------------------
+// Stats
+var (
+	rmsnormStats = map[int]int{}
+	softmaxStats = map[int]int{}
+	matmulStats  = map[[2]int]int{}
+	logitsStats  = map[int]int{}
+)
+
+func printStats() {
+	//fmt.Printf("\n\nmatmul: %v\nrmsnorm: %v\nsoftmax: %v\nlogits: %v\n\n",
+	//	matmulStats, rmsnormStats, softmaxStats, logitsStats)
+}
